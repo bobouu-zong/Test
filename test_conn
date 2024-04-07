@@ -1,0 +1,77 @@
+user = 'XXX'
+snf_pwd = 'XXX'
+pwd='XXX'
+
+import sys
+import os
+
+
+import pandas as pd
+import snowflake.connector
+import os 
+#import userpwd
+def get_df(qy):
+    con = snowflake.connector.connect(
+    user=user,
+    password=pwd,
+    authenticator="https://didentity.okta.com",
+    role='ROLE_' + str(user),
+    account="dfs.us-east-1.privatelink"
+    )
+    cursor = con.cursor()
+    cursor.execute('USE warehouse ENT_DIRBNK_CRSPRD_MKT_USER_STD_WH')
+    cursor.execute('USE database SFAAP')
+    cursor.execute('USE schema WS_CARD_CCE')
+    query = qy
+    results = cursor.execute(query)
+    outdata = pd.DataFrame.from_records(iter(results), columns=[x[0] for x in results.description])
+    print(outdata.shape)
+    cursor.close()
+    con.close()
+    return(outdata)
+
+def push_df(df,date_columns,table_name):
+    con = snowflake.connector.connect(
+    user=user,
+    password=pwd,
+    authenticator="https://didentity.okta.com",
+    role='ROLE_' + str(user),
+    account="dfs.us-east-1.privatelink"
+    )
+    cursor = con.cursor()
+    cursor.execute('USE warehouse ENT_DIRBNK_CRSPRD_MKT_USER_STD_WH')
+    cursor.execute('USE database SFAAP')
+    cursor.execute('USE schema WS_CARD_CCE')
+    
+    n_cols_csv = df.shape[1]
+    n_rows_csv = df.shape[0]
+    
+
+    # Only consider datetime column 
+
+    table_type = []
+    for item in df.columns.values:
+        if (df[item].dtypes == object) or (df[item].dtypes=='<M8[ns]'):
+            if item not in date_columns:
+                table_col_type = 'varchar'
+            else:
+                table_col_type = 'date'
+        else:
+            if isinstance(df.reset_index(drop=True).loc[0,item],int):
+                table_col_type = 'integer'
+            else:
+                table_col_type = 'float'
+        table_type.append(item +' '+ table_col_type)
+    table_string = ','.join(table_type)
+    df.to_csv('TMP.csv.gz', compression='gzip', index = False, sep = ',')
+  
+    create_table_query = f'''CREATE OR REPLACE TABLE {table_name}({table_string})'''
+    cursor.execute(create_table_query)
+    csv_file_path='TMP.csv.gz'
+    cursor.execute( 'remove @~/TMP.csv.gz')
+    cursor.execute(f'''put file://{csv_file_path}* @%{table_name}''')
+    cursor.execute(f'''copy into "SFAAP"."WS_CARD_CCE"."{table_name}"  file_format = (TYPE=CSV FIELD_DELIMITER = ","  SKIP_HEADER = 1 )''')
+    
+    os.remove('TMP.csv.gz')
+    cursor.close()
+    con.close()
